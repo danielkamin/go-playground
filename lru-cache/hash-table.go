@@ -26,7 +26,7 @@ func newHashKey(key string, itemsLen int) int {
 	return int(hash.Sum32()) % itemsLen
 }
 
-func (ht *HashTable) Get(key string) (*Entry, bool) {
+func (ht *HashTable) get(key string) (*Entry, bool) {
 	hashKey := newHashKey(key, len(ht.buckets))
 	entry := ht.buckets[hashKey]
 	for entry != nil {
@@ -37,9 +37,9 @@ func (ht *HashTable) Get(key string) (*Entry, bool) {
 	}
 	return nil, false
 }
-func (ht *HashTable) Put(key string, value *Node) bool {
+func (ht *HashTable) put(key string, value *Node) bool {
 	hashKey := newHashKey(key, len(ht.buckets))
-	if existingEntry, exists := ht.Get(key); exists {
+	if existingEntry, exists := ht.get(key); exists {
 		existingEntry.value = value
 		return true
 	}
@@ -51,7 +51,7 @@ func (ht *HashTable) Put(key string, value *Node) bool {
 	return true
 }
 
-func (ht *HashTable) Delete(key string) bool {
+func (ht *HashTable) delete(key string) bool {
 	hashKey := newHashKey(key, len(ht.buckets))
 	current := ht.buckets[hashKey]
 	var previous *Entry
