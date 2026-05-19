@@ -1,10 +1,13 @@
 package main
 
+import "sync"
+
 type LRUCache struct {
 	capacity  int
 	dll       *DLL
 	hashTable *HashTable
 	len       int
+	mu        sync.RWMutex
 }
 
 func NewLRUCache(capacity int) *LRUCache {
@@ -17,6 +20,8 @@ func NewLRUCache(capacity int) *LRUCache {
 }
 
 func (lc *LRUCache) Get(key string) (string, bool) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
 	entry, found := lc.hashTable.get(key)
 	if !found {
 		return "", false
@@ -26,6 +31,8 @@ func (lc *LRUCache) Get(key string) (string, bool) {
 	return entry.value.value, true
 }
 func (lc *LRUCache) Put(key, value string) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
 	entry, exists := lc.hashTable.get(key)
 	if exists {
 		entry.value.value = value

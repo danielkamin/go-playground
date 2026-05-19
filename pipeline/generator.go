@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
 type WeatherData struct {
@@ -16,7 +17,7 @@ type WeatherData struct {
 	Timezone_abbreviation string  `json:"timezone_abbreviation"`
 	Hourly                struct {
 		Time        []string  `json:"time"`
-		Temperature []float64 `json:"temperature"`
+		Temperature []float64 `json:"temperature_2m"`
 	} `json:"hourly"`
 	Hourly_units struct {
 		Temperature_2m string `json:"temperature_2m"`
@@ -25,30 +26,46 @@ type WeatherData struct {
 
 const openMeteoBaseUrl = "https://api.open-meteo.com/v1/forecast"
 
-func fetchWeather(url string) (WeatherData, error) {
-	resp, err := http.Get(url)
-	defer resp.Body.Close()
-	if err != nil {
-		fmt.Errorf("Error occured during getting data for url: %s, %+v", url, err)
-		return WeatherData{}, err
+func fetchWeatherWorker(jobs <-chan string, result chan<- WeatherData) {
+	for url := range jobs {
+		resp, err := http.Get(url)
+		if err != nil {
+			fmt.Printf("Error occured during getting data for url: %s, %+v", url, err)
+			continue
+		}
+
+		weatherData := WeatherData{}
+		err = json.NewDecoder(resp.Body).Decode(&weatherData)
+		if err != nil {
+			fmt.Printf("Error occured during decoding data for url: %s, %+v", url, err)
+			continue
+		}
+		resp.Body.Close()
+		result <- weatherData
 	}
-	weatherData := WeatherData{}
-	err = json.NewDecoder(resp.Body).Decode(&weatherData)
-	return weatherData, err
+
 }
 func generateData(locations map[string]Coordinates) <-chan WeatherData {
-	out := make(chan WeatherData)
+
+	jobs := make(chan string)
+	result := make(chan WeatherData)
+	var workerGroup sync.WaitGroup
+
+	for i := 0; i < 3; i++ {
+		workerGroup.Go(func() {
+			fetchWeatherWorker(jobs, result)
+		})
+	}
 	go func() {
-		defer close(out)
-		for location, coord := range locations {
-			fmt.Printf("Getting data for location: %s \n", location)
-			weatherData, err := fetchWeather(fmt.Sprintf("%s?latitude=%f&longitude=%f&hourly=temperature_2m", openMeteoBaseUrl, coord.lat, coord.long))
-			if err != nil {
-				fmt.Errorf("Error occured during parsing data for location: %s, %+v", location, err)
-			}
-			fmt.Printf("data: %+v \n", weatherData)
-			out <- weatherData
+		for _, coord := range locations {
+			jobs <- fmt.Sprintf("%s?latitude=%f&longitude=%f&hourly=temperature_2m", openMeteoBaseUrl, coord.lat, coord.long)
 		}
+		close(jobs)
 	}()
-	return out
+	go func() {
+		workerGroup.Wait()
+		close(result)
+	}()
+
+	return result
 }

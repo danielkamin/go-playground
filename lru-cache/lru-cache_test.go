@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
 
 func TestLRUBasic(t *testing.T) {
 	// get/put podstawowe
@@ -18,3 +22,27 @@ func TestLRUMoveOnGet(t *testing.T) {
 	t.Log("Success TestLRUMoveOnGet!")
 
 } // get przesuwa element, zmienia kolejność
+func TestLRUConcurrent(t *testing.T) {
+	cache := NewLRUCache(100)
+	var wg sync.WaitGroup
+
+	// 50 goroutines pisze
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cache.Put(fmt.Sprintf("key%d", i), fmt.Sprintf("val%d", i))
+		}(i)
+	}
+
+	// 50 goroutines czyta
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cache.Get(fmt.Sprintf("key%d", i))
+		}(i)
+	}
+
+	wg.Wait()
+}

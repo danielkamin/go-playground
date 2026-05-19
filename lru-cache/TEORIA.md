@@ -140,3 +140,118 @@ Zamiast sprawdzać `if head == nil` wszędzie, użyj dummy węzłów:
 dummyHead ↔ [rzeczywiste węzły] ↔ dummyTail
 ```
 Wtedy `addToFront` zawsze wstawia za `dummyHead`, a `removeLast` zawsze usuwa węzeł przed `dummyTail`.
+
+---
+
+## Zadanie 2: Concurrent-safe LRU Cache (sync.RWMutex)
+
+### Problem: dlaczego bazowa implementacja nie jest thread-safe?
+
+Wyobraź sobie dwie goroutines działające jednocześnie:
+- Goroutine A: `Get("x")` → odczytuje z hashmapy, zaczyna przesuwać węzeł w DLL
+- Goroutine B: `Put("y", "2")` → modyfikuje tę samą DLL w tym samym momencie
+
+Skutek: **data race** — wskaźniki `prev`/`next` w DLL mogą zostać nadpisane w połowie operacji, prowadząc do uszkodzonej struktury, pętli w liście lub paniki `nil pointer dereference`.
+
+Możesz to zweryfikować uruchamiając testy z flagą `-race`:
+```bash
+go test -race ./...
+```
+
+### sync.RWMutex — co to jest?
+
+`sync.RWMutex` to mutex z dwoma trybami blokady:
+
+| Operacja | Kiedy używać | Blokuje kogo? |
+|----------|-------------|---------------|
+| `mu.Lock()` / `mu.Unlock()` | zapis — modyfikujesz dane | wszystkich innych (czytelników i pisarzy) |
+| `mu.RLock()` / `mu.RUnlock()` | odczyt — tylko czytasz | tylko pisarzy, czytelników przepuszcza |
+
+**Klucz:** wiele goroutines może czytać jednocześnie (`RLock`), ale zapis wymaga wyłączności (`Lock`). To lepsze niż zwykły `sync.Mutex` gdy odczyty są częstsze niż zapisy.
+
+```
+RLock  RLock  RLock  ← mogą działać równolegle ✓
+RLock  Lock         ← Lock czeka aż RLocki się skończą ✗→ czeka
+Lock   Lock         ← drugi Lock czeka na pierwszy ✗→ czeka
+```
+
+### Jak dodać do LRUCache
+
+**Krok 1 — dodaj mutex do struktury:**
+```go
+type LRUCache struct {
+    capacity  int
+    dll       *DLL
+    hashTable *HashTable
+    len       int
+    mu        sync.RWMutex  // ← dodaj to pole
+}
+```
+
+**Krok 2 — Get używa RLock (tylko odczyt? nie do końca!)**
+
+Uwaga: `Get` w LRU **nie jest czystym odczytem** — przesuwa węzeł na front DLL, czyli **mutuje stan**. Dlatego `Get` też potrzebuje pełnego `Lock`, nie `RLock`.
+
+```go
+func (lc *LRUCache) Get(key string) (string, bool) {
+    lc.mu.Lock()
+    defer lc.mu.Unlock()
+    // ... reszta bez zmian
+}
+```
+
+**Krok 3 — Put używa Lock (zapis):**
+```go
+func (lc *LRUCache) Put(key, value string) {
+    lc.mu.Lock()
+    defer lc.mu.Unlock()
+    // ... reszta bez zmian
+}
+```
+
+> `defer mu.Unlock()` to idiom Go — gwarantuje zwolnienie locka nawet jeśli funkcja zwróci wcześniej przez `return`.
+
+**Kiedy RLock miałoby sens?** Gdybyś dodał metodę `Peek(key)` — odczyt bez zmiany kolejności w DLL. Wtedy jest to czysty odczyt i możesz użyć `RLock`.
+
+### Pułapka: zagnieżdżone locki (deadlock)
+
+Nie rób tego:
+```go
+func (lc *LRUCache) Get(key string) (string, bool) {
+    lc.mu.Lock()
+    defer lc.mu.Unlock()
+    lc.Put(key, value)  // ← Put też próbuje Lock() → DEADLOCK!
+}
+```
+`sync.RWMutex` w Go nie jest reentrant — ta sama goroutine nie może wziąć locka dwa razy. Rozwiązanie: wydziel prywatne metody bez locka i wołaj je wewnętrznie.
+
+### Testy współbieżności
+
+```go
+func TestLRUConcurrent(t *testing.T) {
+    cache := NewLRUCache(100)
+    var wg sync.WaitGroup
+
+    // 50 goroutines pisze
+    for i := 0; i < 50; i++ {
+        wg.Add(1)
+        go func(i int) {
+            defer wg.Done()
+            cache.Put(fmt.Sprintf("key%d", i), fmt.Sprintf("val%d", i))
+        }(i)
+    }
+
+    // 50 goroutines czyta
+    for i := 0; i < 50; i++ {
+        wg.Add(1)
+        go func(i int) {
+            defer wg.Done()
+            cache.Get(fmt.Sprintf("key%d", i))
+        }(i)
+    }
+
+    wg.Wait()
+}
+```
+
+Uruchom z `-race` — jeśli nie ma data race, mutex działa poprawnie.
